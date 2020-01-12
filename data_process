@@ -1,0 +1,109 @@
+# coding: utf-8
+
+import xml.etree.ElementTree as ET
+import numpy as np
+import PIL
+import pickle
+import os
+import scipy.misc
+from os import listdir
+from os.path import join
+
+
+path = 'D:/datasets/PASCAL_VOC/VOCtrainval_06-Nov-2007/VOCdevkit/'
+sets=[('2007', 'train')]
+ 
+classes = ["aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", 
+           "cat", "chair", "cow", "diningtable", "dog", "horse", "motorbike", 
+           "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor"]
+ 
+def convert_annotation(year, image_id):
+    in_file = open(path+'VOC%s/Annotations/%s.xml'%(year, image_id))
+    out_file = open(path+'VOC%s/labels/%s.txt'%(year, image_id), 'w')
+    tree=ET.parse(in_file)
+    root = tree.getroot()
+    size = root.find('size')
+    w = int(size.find('width').text)
+    h = int(size.find('height').text)
+ 
+    for obj in root.iter('object'):
+        difficult = obj.find('difficult').text
+        cls = obj.find('name').text
+        if cls not in classes or int(difficult) == 1:
+            continue
+        cls_id = classes.index(cls)
+        xmlbox = obj.find('bndbox')
+        b = (float(xmlbox.find('xmin').text), float(xmlbox.find('ymin').text), float(xmlbox.find('xmax').text), float(xmlbox.find('ymax').text))
+        out_file.write(str(cls_id) + " " + " ".join([str(a) for a in b]) + '\n')
+
+
+
+for year, image_set in sets:
+   if not os.path.exists(path+'VOC%s/labels/'%(year)):
+       os.makedirs(path+'VOC%s/labels/'%(year))
+   image_ids = open(path+'VOC%s/ImageSets/Main/%s.txt'%(year, image_set)).read().strip().split()
+   list_file = open(path+'%s_%s.txt'%(year,image_set),'w')
+   for image_id in image_ids:
+       list_file.write(path+'VOC%s/JPEGImages/%s.jpg\n'%(year, image_id))
+       convert_annotation(year, image_id)
+   list_file.close()
+
+
+def load_data(images_path,labels_path):
+    images = []
+    boxes = []
+    
+    with open(images_path,'r') as f:
+        while True:
+            line = f.readline()
+            if line == '':
+                break
+            image = scipy.misc.imread(line.strip())
+            images.append(image)
+    
+    labels_list = os.listdir(labels_path)
+    for label in labels_list:
+        sig_label = []
+        with open(join(labels_path,label),'r') as f:
+            while True:
+                line = f.readline()
+                if line == '':
+                    break
+                sig_label.append(list(map(float,line.strip().split())))
+        boxes.append(np.array(sig_label))    
+    return images,boxes
+
+
+def process_data(images,boxes):
+    
+    images = [PIL.Image.fromarray(i) for i in images]
+    orig_size = np.array([[i.width, i.height] for i in images])
+    orig_size = np.expand_dims(orig_size, axis=1)
+
+    # Image preprocessing.
+    processed_images = [i.resize((416, 416), PIL.Image.BICUBIC) for i in images]
+    processed_images = [np.array(image, dtype=np.float) for image in processed_images]
+    processed_images = [image/255. for image in processed_images]
+
+    
+    boxes = [box.reshape((-1, 5)) for box in boxes]
+
+    # Get box parameters as x_center, y_center, box_width, box_height, class.
+    boxes_xy = [0.5 * (box[:, 3:5] + box[:, 1:3]) for box in boxes]
+    boxes_wh = [box[:, 3:5] - box[:, 1:3] for box in boxes]
+    boxes_xy = [boxxy / orig_size[i] for i,boxxy in enumerate(boxes_xy)]
+    boxes_wh = [boxwh / orig_size[i] for i,boxwh in enumerate(boxes_wh)]
+    boxes = [np.concatenate((boxes_xy[i], boxes_wh[i], box[:, 0:1]), axis=1) for i, box in enumerate(boxes)]
+
+    # find the max number of boxes
+    max_boxes = 0
+    for boxz in boxes:
+        if boxz.shape[0] > max_boxes:
+            max_boxes = boxz.shape[0]
+
+    # add zero pad for training
+    for i, boxz in enumerate(boxes):
+        if boxz.shape[0]  < max_boxes:
+            zero_padding = np.zeros( (max_boxes-boxz.shape[0], 5), dtype=np.float32)
+            boxes[i] = np.vstack((boxz, zero_padding))
+    return np.array(processed_images),np.array(boxes)
